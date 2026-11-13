@@ -139,7 +139,7 @@ async function main(): Promise<void> {
   // 1. Load and validate configuration
   const config = loadConfig();
   logger.info(
-    `Config: FMG=${config.fmgHost}:${String(config.fmgPort)}, API=${config.fmgApiVersion}, transport=${config.mcpTransport}`,
+    `Config: FMG=${config.fmgHost}:${String(config.fmgPort)}, API=${config.fmgApiVersion}, transport=${config.mcpTransport}, auth=${config.fmgApiToken ? 'token' : `session (${config.fmgUsername ?? ''})`}`,
   );
 
   // 2. Load API spec
@@ -157,6 +157,8 @@ async function main(): Promise<void> {
     host: config.fmgHost,
     port: config.fmgPort,
     apiToken: config.fmgApiToken,
+    username: config.fmgUsername,
+    password: config.fmgPassword,
     verifySsl: config.fmgVerifySsl,
   });
   logger.info('FortiManager client created');
@@ -207,7 +209,10 @@ async function main(): Promise<void> {
       },
     });
     logger.info('MCP server listening on stdio');
-    onShutdown(() => stdio.close());
+    onShutdown(async () => {
+      await stdio.close();
+      await client.dispose();
+    });
   } else {
     if (config.mcpApiKey) {
       logger.info('MCP_API_KEY set — /mcp requires Authorization: Bearer <key>.');
@@ -228,7 +233,10 @@ async function main(): Promise<void> {
     logger.info(`MCP HTTP server listening on port ${String(listener.port)}`);
     logger.info(`  Health:  http://localhost:${String(listener.port)}/health`);
     logger.info(`  MCP:     http://localhost:${String(listener.port)}/mcp`);
-    onShutdown(() => listener.close());
+    onShutdown(async () => {
+      await listener.close();
+      await client.dispose();
+    });
   }
 }
 

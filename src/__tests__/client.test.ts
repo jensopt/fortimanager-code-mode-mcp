@@ -302,3 +302,89 @@ describe('FmgClient', () => {
     });
   });
 });
+
+// ─── Session (username/password) auth ───────────────────────────────
+
+describe('FmgClient session auth', () => {
+  const SESSION_CONFIG = {
+    host: 'https://fmg.example.com',
+    port: 443,
+    username: 'ASPIDA',
+    password: 'secret',
+    verifySsl: true,
+  };
+
+  const loginOk = (session: string): unknown => ({
+    id: 0,
+    result: [{ status: { code: 0, message: 'OK' }, url: '/sys/login/user' }],
+    session,
+  });
+
+  const bodyOf = (call: number): Record<string, unknown> =>
+    JSON.parse(vi.mocked(fetch).mock.calls[call]![1]!.body as string) as Record<string, unknown>;
+
+  let sessionClient: FmgClient;
+  beforeEach(() => {
+    sessionClient = new FmgClient(SESSION_CONFIG);
+  });
+
+  it('logs in once and sends the session without a Bearer header', async () => {
+    mockFetch(loginOk('sess-A'));
+    mockFetch(makeSuccessResponse(1, '/sys/status', {}));
+    mockFetch(makeSuccessResponse(2, '/sys/status', {}));
+
+    await sessionClient.get('/sys/status');
+    await sessionClient.get('/sys/status');
+
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+    const login = bodyOf(0);
+    expect(login['params']).toEqual([
+      { url: '/sys/login/user', data: { user: 'ASPIDA', passwd: 'secret' } },
+    ]);
+    expect(bodyOf(1)['session']).toBe('sess-A');
+    const headers = vi.mocked(fetch).mock.calls[1]![1]!.headers as Record<string, string>;
+    expect(headers['Authorization']).toBeUndefined();
+  });
+
+  it('logs in again and retries once when the session expired', async () => {
+    mockFetch(loginOk('sess-A'));
+    mockFetch(makeErrorResponse(1, '/dvmdb/device', -11, 'No permission for the resource'));
+    mockFetch(makeErrorResponse(2, '/sys/status', -11, 'No permission for the resource'));
+    mockFetch(loginOk('sess-B'));
+    mockFetch(makeSuccessResponse(3, '/dvmdb/device', [{ name: 'fw' }]));
+
+    const data = await sessionClient.get('/dvmdb/device');
+
+    expect(data).toEqual([{ name: 'fw' }]);
+    expect(bodyOf(4)['session']).toBe('sess-B');
+  });
+
+  it('keeps a real permission denial without logging in again', async () => {
+    mockFetch(loginOk('sess-A'));
+    mockFetch(makeErrorResponse(1, '/pm/config/adom/root/obj/firewall/address', -11, 'No permission'));
+    mockFetch(makeSuccessResponse(2, '/sys/status', {}));
+
+    await expect(
+      sessionClient.add('/pm/config/adom/root/obj/firewall/address', { name: 'x' }),
+    ).rejects.toThrow(FmgApiError);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+  });
+
+  it('throws a clear error when login is refused', async () => {
+    mockFetch(makeErrorResponse(0, '/sys/login/user', -11, 'No permission for the resource'));
+
+    await expect(sessionClient.get('/sys/status')).rejects.toThrow(/Login failed for admin "ASPIDA"/);
+  });
+
+  it('logs out on dispose', async () => {
+    mockFetch(loginOk('sess-A'));
+    mockFetch(makeSuccessResponse(1, '/sys/status', {}));
+    mockFetch(makeSuccessResponse(0, '/sys/logout', {}));
+
+    await sessionClient.get('/sys/status');
+    await sessionClient.dispose();
+
+    expect(bodyOf(2)['params']).toEqual([{ url: '/sys/logout' }]);
+    expect(bodyOf(2)['session']).toBe('sess-A');
+  });
+});

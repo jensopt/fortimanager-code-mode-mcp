@@ -72,6 +72,23 @@ describe('loadConfig', () => {
     expect(() => loadConfig()).toThrow('Configuration validation failed');
   });
 
+  it('accepts FMG_USERNAME + FMG_PASSWORD instead of a token', () => {
+    vi.stubEnv('FMG_HOST', 'https://fmg.example.com');
+    vi.stubEnv('FMG_USERNAME', 'ASPIDA');
+    vi.stubEnv('FMG_PASSWORD', 'secret');
+
+    const config = loadConfig();
+    expect(config.fmgApiToken).toBeUndefined();
+    expect(config.fmgUsername).toBe('ASPIDA');
+  });
+
+  it('throws when only FMG_USERNAME is set', () => {
+    vi.stubEnv('FMG_HOST', 'https://fmg.example.com');
+    vi.stubEnv('FMG_USERNAME', 'ASPIDA');
+
+    expect(() => loadConfig()).toThrow('Set FMG_API_TOKEN, or FMG_USERNAME and FMG_PASSWORD');
+  });
+
   it('throws on invalid FMG_HOST (not a URL)', () => {
     setEnv({ FMG_HOST: 'not-a-url' });
 

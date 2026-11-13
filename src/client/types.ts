@@ -117,8 +117,12 @@ export interface FmgClientConfig {
   host: string;
   /** HTTPS port (default: 443) */
   port: number;
-  /** API token for authentication */
-  apiToken: string;
+  /** API token for authentication (takes precedence over username/password) */
+  apiToken?: string;
+  /** Admin username for session login (used when no apiToken is set) */
+  username?: string;
+  /** Admin password for session login */
+  password?: string;
   /** Whether to verify TLS certificates (default: true) */
   verifySsl: boolean;
 }

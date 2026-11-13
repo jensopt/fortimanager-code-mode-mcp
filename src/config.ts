@@ -15,8 +15,12 @@ const configSchema = z.object({
   /** FortiManager HTTPS port */
   fmgPort: z.coerce.number().int().min(1).max(65535).default(443),
 
-  /** API token for authentication */
-  fmgApiToken: z.string().min(1, 'FMG_API_TOKEN is required'),
+  /** API token for authentication (preferred when set) */
+  fmgApiToken: z.string().min(1).optional(),
+
+  /** Admin username/password for session login (used when no API token is set) */
+  fmgUsername: z.string().min(1).optional(),
+  fmgPassword: z.string().min(1).optional(),
 
   /** Whether to verify TLS certificates */
   fmgVerifySsl: z
@@ -56,6 +60,9 @@ const configSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+}).refine((c) => Boolean(c.fmgApiToken ?? (c.fmgUsername && c.fmgPassword)), {
+  message: 'Set FMG_API_TOKEN, or FMG_USERNAME and FMG_PASSWORD',
+  path: ['fmgApiToken'],
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
@@ -70,7 +77,9 @@ export function loadConfig(): AppConfig {
   const result = configSchema.safeParse({
     fmgHost: process.env['FMG_HOST'],
     fmgPort: process.env['FMG_PORT'],
-    fmgApiToken: process.env['FMG_API_TOKEN'],
+    fmgApiToken: process.env['FMG_API_TOKEN'] || undefined,
+    fmgUsername: process.env['FMG_USERNAME'] || undefined,
+    fmgPassword: process.env['FMG_PASSWORD'] || undefined,
     fmgVerifySsl: process.env['FMG_VERIFY_SSL'],
     fmgApiVersion: process.env['FMG_API_VERSION'],
     mcpTransport: process.env['MCP_TRANSPORT'],

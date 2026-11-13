@@ -7,8 +7,9 @@
  */
 
 import type { Dispatcher } from 'undici';
-import { type AuthProvider, createAuthProvider } from './auth.js';
+import { type AuthProvider, SessionAuthProvider, createAuthProvider } from './auth.js';
 import {
+  FMG_ERROR_CODES,
   FmgApiError,
   FmgTransportError,
   type FmgClientConfig,
@@ -59,7 +60,7 @@ export class FmgClient {
     auth?: AuthProvider,
   ) {
     this.endpoint = `${config.host}:${config.port}/jsonrpc`;
-    this.auth = auth ?? createAuthProvider(config);
+    this.auth = auth ?? createAuthProvider(config, (req) => this.sendRequest(req));
     this.verifySsl = config.verifySsl;
     this.requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS;
   }
@@ -140,8 +141,7 @@ export class FmgClient {
     method: FmgMethod,
     paramsList: FmgRequestParams[],
   ): Promise<FmgResponseResult<T>[]> {
-    const request = this.buildRequest(method, paramsList);
-    const response = await this.sendRequest<T>(request);
+    const response = await this.dispatch<T>(method, paramsList);
     return response.result;
   }
 
@@ -163,8 +163,12 @@ export class FmgClient {
     params: FmgRequestParams[],
     opts?: { tokenOverride?: string },
   ): Promise<JsonRpcResponse<T>> {
-    const request = this.buildRequest(method, params);
-    return this.sendRequest<T>(request, opts?.tokenOverride);
+    return this.dispatch<T>(method, params, opts?.tokenOverride);
+  }
+
+  /** Log out a session login (no-op for token auth) */
+  async dispose(): Promise<void> {
+    await this.auth.dispose?.();
   }
 
   // ── Health Check ────────────────────────────────────────────────
@@ -186,20 +190,58 @@ export class FmgClient {
   // ── Internal Methods ────────────────────────────────────────────
 
   /** Build a JSON-RPC request envelope */
-  private buildRequest(method: FmgMethod, params: FmgRequestParams[]): JsonRpcRequest {
+  private buildRequest(
+    method: FmgMethod,
+    params: FmgRequestParams[],
+    withSession = true,
+  ): JsonRpcRequest {
     this.requestId = (this.requestId + 1) % MAX_REQUEST_ID;
     return {
       id: this.requestId,
       method,
       params,
-      session: this.auth.getSession(),
+      session: withSession ? this.auth.getSession() : null,
     };
+  }
+
+  /**
+   * Send a request. Session auth logs in first; on -11/-12 it checks whether the
+   * session is still valid and, if not, logs in again and retries once.
+   */
+  private async dispatch<T>(
+    method: FmgMethod,
+    params: FmgRequestParams[],
+    tokenOverride?: string,
+  ): Promise<JsonRpcResponse<T>> {
+    const session = !tokenOverride && this.auth instanceof SessionAuthProvider ? this.auth : null;
+    if (!session) {
+      return this.sendRequest<T>(this.buildRequest(method, params, !tokenOverride), tokenOverride);
+    }
+
+    await session.initialize();
+    const used = session.getSession();
+    const response = await this.sendRequest<T>(this.buildRequest(method, params));
+    if (!FmgClient.hasSessionError(response)) return response;
+
+    // -11 is also a real permission denial (e.g. a write with rpc-permit read): keep it if the session still works
+    const probe = await this.sendRequest(this.buildRequest('get', [{ url: '/sys/status' }]));
+    if (probe.result[0]?.status.code === FMG_ERROR_CODES.SUCCESS) return response;
+
+    await session.relogin(used);
+    return this.sendRequest<T>(this.buildRequest(method, params));
+  }
+
+  private static hasSessionError(response: JsonRpcResponse<unknown>): boolean {
+    return response.result.some(
+      (r) =>
+        r.status?.code === FMG_ERROR_CODES.SESSION_TIMEOUT ||
+        r.status?.code === FMG_ERROR_CODES.INVALID_SESSION,
+    );
   }
 
   /** Send a single-param request and extract the first result's data */
   private async singleRequest<T>(method: FmgMethod, params: FmgRequestParams): Promise<T> {
-    const request = this.buildRequest(method, [params]);
-    const response = await this.sendRequest<T>(request);
+    const response = await this.dispatch<T>(method, [params]);
 
     const result = response.result[0];
     if (!result) {
